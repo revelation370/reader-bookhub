@@ -1,0 +1,14 @@
+# 运行数据（用户书架/缓存/日志，不应进入仓库）
+data/
+out/
+books/
+server.log
+server.log.old
+config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# 测试夹具（含小说正文，版权属原站；用 scripts/build_fixtures.py 重新采集）
+tests/fixtures/

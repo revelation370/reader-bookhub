@@ -1,0 +1,30 @@
+[
+  {
+    "name": "平凡文学",
+    "host": "http://www.pksge.la",
+    "method": "POST",
+    "url": "http://www.pksge.la/modules/article/search.php",
+    "params": "searchkey=%s&searchtype=articlename",
+    "charset": "utf-8",
+    "name_xpath": "/html/body/div[4]/div[1]/div/div/div/table/div/table/tr/td/div/div[2]/h2/a",
+    "mainpage_xpath": "/html/body/div[4]/div[1]/div/div/div/table/div/table/tr/td/div/div[2]/h2/a/@href"
+  },
+  {
+    "name": "大米小说",
+    "host": "https://www.dmxs2.com",
+    "method": "GET",
+    "url": "https://www.dmxs2.com/search?keyword=%s",
+    "charset": "utf-8",
+    "name_xpath": "/html/body/div[2]/div[3]/div[2]/div/div/h4/a",
+    "mainpage_xpath": "/html/body/div[2]/div[3]/div[2]/div/div/h4/a/@href"
+  },
+  {
+    "name": "晋江文学城",
+    "host": "https://www.jjwxc.net",
+    "method": "GET",
+    "url": "https://www.jjwxc.net/search.php?kw=%s&t=1",
+    "charset": "gbk",
+    "name_xpath": "/html/body/table/tr/td/div[6]/div/h3/a",
+    "mainpage_xpath": "/html/body/table/tr/td/div[6]/div/h3/a/@href"
+  }
+]

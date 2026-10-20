@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>bookhub · 找书</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#26282c; --sub:#8a8f98; --acc:#3b6ef5; --ok:#2e9e5b; --warn:#c98a1a; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); padding:28px 16px 60px; }
+  .wrap { max-width:860px; margin:0 auto; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--sub); font-size:12.5px; margin-bottom:18px; }
+  .searchbar { display:flex; gap:8px; margin-bottom:14px; }
+  .searchbar input { flex:1; padding:11px 14px; border:1px solid #d9dce1; border-radius:8px; font-size:15px; outline:none; background:var(--card); }
+  .searchbar input:focus { border-color:var(--acc); }
+  .searchbar button { padding:11px 22px; background:var(--acc); color:#fff; border:none; border-radius:8px; font-size:14px; cursor:pointer; }
+  .searchbar button:disabled { opacity:.5; cursor:wait; }
+  .card { background:var(--card); border:1px solid #e6e8ec; border-radius:10px; padding:14px 16px; margin-bottom:10px; }
+  .card .t { font-size:15px; font-weight:600; }
+  .card .m { color:var(--sub); font-size:12.5px; margin-top:3px; }
+  .card .ops { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+  .btn { padding:6px 13px; border-radius:6px; border:1px solid #d9dce1; background:#fff; font-size:13px; cursor:pointer; }
+  .btn.pri { background:var(--acc); color:#fff; border-color:var(--acc); }
+  .btn:disabled { opacity:.5; }
+  .btn.del { color:#c0392b; border-color:#e6b0aa; }
+  .webln { font-size:12.5px; color:#1d7a45; background:#e5f5ec; border-radius:6px; padding:6px 12px; margin-bottom:10px; }
+  .webln.dim { color:#8a8f98; background:#f0f1f3; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11.5px; margin-left:6px; vertical-align:2px; }
+  .tag.gw { background:#e8effe; color:var(--acc); }
+  .tag.web { background:#e5f5ec; color:#1d7a45; }
+  .tag.ok { background:#e5f5ec; color:var(--ok); }
+  .tag.warn { background:#fbf2e0; color:var(--warn); }
+  .log { background:#f2f4f7; border-radius:8px; padding:10px 12px; font-size:12px; color:#5b626d; max-height:180px; overflow:auto; margin-top:10px; white-space:pre-wrap; }
+  .bar { height:5px; background:#e8ebef; border-radius:3px; overflow:hidden; margin-top:10px; }
+  .bar > div { height:100%; background:var(--acc); width:0; transition:width .4s; }
+  h2 { font-size:15px; margin:26px 0 10px; }
+  .empty { color:var(--sub); font-size:13px; padding:20px 0; text-align:center; }
+  .path { font-size:12px; color:var(--sub); word-break:break-all; margin-top:6px; }
+  .hint { background:#eef3ff; border:1px solid #d8e3fd; color:#33508f; border-radius:8px; padding:10px 13px; font-size:12.5px; margin-bottom:14px; line-height:1.7; }
+  .err { color:#c0392b; font-size:12.5px; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>bookhub 找书台</h1>
+  <div class="sub">聚合书站搜索 → 点开即读。阅读：Reader 搜索框直搜（网关书源），或导出 txt。</div>
+  <div class="hint" id="hint" style="display:none"></div>
+
+  <div class="searchbar">
+    <input id="q" placeholder="输入书名搜索，或直接粘贴书籍目录页网址…" autocomplete="off">
+    <button id="go" onclick="doSearch()">搜索</button>
+  </div>
+  <div id="results"><div class="empty">输入书名开始搜索</div></div>
+
+  <h2>我的书架</h2>
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+    <button class="btn" onclick="healthcheck()">运行体检</button>
+    <span id="healthsum" style="font-size:12.5px;color:var(--sub);align-self:center"></span>
+  </div>
+  <div id="healthreport" style="margin-bottom:10px"></div>
+  <div id="shelf"><div class="empty">（空）</div></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let HINT = '';
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  return r.json();
+}
+
+function setHint() {
+  const h = $('hint');
+  if (!HINT) { h.style.display = 'none'; return; }
+  h.innerHTML = HINT; h.style.display = '';
+}
+
+async function doSearch() {
+  const q = $('q').value.trim();
+  if (!q) return;
+  // 粘贴了网址：直接解析这本书，不走聚合搜索
+  if (/^https?:\/\/\S+$/i.test(q) || /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(q)) {
+    const url = /^https?:/i.test(q) ? q : 'http://' + q;
+    $('results').innerHTML = '<div class="card"><div class="t">解析链接中</div>' +
+      '<div class="m">' + esc(url) + '</div>' +
+      '<div class="log">开始解析…\n</div><div class="bar"><div></div></div></div>';
+    await startJob({url: url, txt: false}, $('results').firstElementChild);
+    loadShelf();
+    return;
+  }
+  $('go').disabled = true;
+  $('results').innerHTML = '<div class="empty">搜索中…（各站并发，约几秒）</div>';
+  try {
+    const data = await api('/api/search?q=' + encodeURIComponent(q));
+    if (!data.results.length) {
+      $('results').innerHTML = '<div class="empty">没有找到。试试：<br>1) 换关键词（去掉序号/符号）<br>2) 直接粘贴书籍目录页网址到搜索框</div>';
+    } else {
+      const webN = data.results.filter(x => x.src === 'web').length;
+      const webLine = webN
+        ? `<div class="webln">🌐 网页发现：${webN} 个新站来源（已验证可访问）</div>`
+        : `<div class="webln dim">🌐 网页发现：无结果（搜索引擎暂未收录此书，或已被反爬拦截）</div>`;
+      $('results').innerHTML = webLine + data.results.map(r => card(r)).join('');
+    }
+  } catch (e) {
+    $('results').innerHTML = '<div class="empty">搜索失败：' + e + '</div>';
+  }
+  $('go').disabled = false;
+}
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+function card(r) {
+  const tag = r.src === 'web'
+    ? `<span class="tag web">🌐 ${esc(r.site)}·网页发现</span>`
+    : `<span class="tag gw">${esc(r.site)}</span>`;
+  return `<div class="card" id="c_${r.id}">
+    <div class="t">${esc(r.title)}${tag}</div>
+    <div class="m">${esc(r.author || '')} ${esc(r.url || '')}</div>
+    <div class="ops">
+      <button class="btn pri" onclick="resolve('${r.id}','${encodeURIComponent(r.title)}',true)">解析并加入书架</button>
+      <button class="btn" onclick="resolve('${r.id}','${encodeURIComponent(r.title)}',false)">仅解析</button>
+    </div>
+    <div class="log" style="display:none"></div>
+  </div>`;
+}
+
+async function resolve(bid, title, wantTxt) {
+  const el = $('c_' + bid);
+  const url = el ? (el.querySelector('.m').textContent.split(' ').pop()) : '';
+  await startJob({url, title: decodeURIComponent(title), txt: wantTxt}, el);
+}
+
+async function resolveByUrl(url, title) {
+  await startJob({url, title: decodeURIComponent(title), txt: true}, null);
+}
+
+async function startJob(body, el) {
+  let logEl, bar;
+  const box = el || $('results');
+  if (el) {
+    logEl = el.querySelector('.log'); logEl.style.display = ''; logEl.textContent = '解析中…\n';
+  } else {
+    $('results').innerHTML = '<div class="card"><div class="t">解析中</div><div class="log">开始…\n</div><div class="bar"><div></div></div></div>';
+    logEl = $('results').querySelector('.log');
+  }
+  const j0 = await api('/api/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (j0.error) { logEl.textContent += '失败：' + j0.error + '\n'; return; }
+  const timer = setInterval(async () => {
+    const j = await api('/api/job/' + j0.job_id);
+    logEl.textContent = (j.log || []).join('\n') + '\n';
+    if (j.status === 'done') {
+      clearInterval(timer);
+      logEl.textContent += '\n✔ 完成\n';
+      showResult(j.result, logEl);
+      loadShelf();
+    } else if (j.status === 'failed') {
+      clearInterval(timer);
+      logEl.textContent += '\n✘ 失败：' + (j.result && j.result.error) + '\n';
+    }
+  }, 1500);
+}
+
+function showResult(res, logEl) {
+  if (!res) return;
+  const b = res.book || {};
+  let html = '';
+  html += `章节：<b>${b.chapter_count}</b> 章　`;
+  html += res.reader_ok ? '<span class="tag ok">Reader可直连</span>' : '<span class="tag warn">有防护·走网关</span>';
+  html += `<div class="path">Reader 里搜索「${esc(b.title)}」即可阅读（网关书源）</div>`;
+  if (res.bs_file) html += `<div class="path">独立书源: ${esc(res.bs_file)}</div>`;
+  if (res.txt_file) html += `<div class="path">txt 已导出: ${esc(res.txt_file)}</div>`;
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  logEl.after(div);
+}
+
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function esc_js(s){return (s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+
+async function loadShelf() {
+  const data = await api('/api/books');
+  const el = $('shelf');
+  if (!data.books.length) { el.innerHTML = '<div class="empty">（空）</div>'; return; }
+  el.innerHTML = data.books.map(b => `
+    <div class="card">
+      <div class="t">${esc(b.title)}<span class="tag gw">${esc(b.site)}</span>${b.reader_ok===false?'<span class="tag warn">有防护</span>':''}</div>
+      <div class="m">${b.resolved ? (b.chapter_count+' 章') : '未解析'} ${b.error?('· '+esc(b.error)):''}</div>
+      <div class="ops">
+        <button class="btn" onclick="txt('${b.id}')">导出/更新 txt</button>
+        <button class="btn" onclick="refresh('${b.id}')">刷新目录(追更)</button>
+        <button class="btn" onclick="clearCache('${b.id}','${esc_js(b.title)}')">清缓存</button>
+        <button class="btn del" onclick="removeBook('${b.id}','${esc_js(b.title)}')">移除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function txt(bid) { await simpleJob('/api/txt/' + bid, 'txt'); }
+async function refresh(bid) { await simpleJob('/api/refresh/' + bid, '刷新'); }
+
+async function removeBook(bid, title) {
+  if (!confirm('移除《' + title + '》？\n（只从书架删除，不影响 Reader 已缓存章节；误删后重新搜索解析即可）')) return;
+  const r = await api('/api/delete/' + bid, {method: 'POST'});
+  if (r.error) { alert('移除失败：' + r.error); return; }
+  loadShelf();
+}
+
+async function clearCache(bid, title) {
+  if (!confirm('清空《' + title + '》的章节缓存？\n（书架和进度保留，重新阅读时会重新抓取）')) return;
+  const r = await api('/api/cache/' + bid, {method: 'POST'});
+  if (r.error) { alert('清理失败：' + r.error); return; }
+  alert('已清理');
+}
+
+async function healthcheck() {
+  $('healthsum').textContent = '体检中（逐本探活+抽查三章）…';
+  const j0 = await api('/api/healthcheck', {method: 'POST'});
+  const timer = setInterval(async () => {
+    const j = await api('/api/job/' + j0.job_id);
+    $('healthsum').textContent = (j.log || []).slice(-1)[0] || '体检中…';
+    if (j.status === 'done') { clearInterval(timer); renderHealth(j.result); }
+    if (j.status === 'failed') { clearInterval(timer); $('healthsum').textContent = '体检失败：' + (j.result && j.result.error); }
+  }, 2500);
+}
+
+function renderHealth(res) {
+  if (!res) return;
+  $('healthsum').textContent = `体检完成：${res.n_ok}/${res.n_total} 本健康`;
+  $('healthreport').innerHTML = res.books.map(b => {
+    const lamp = b.ok ? '🟢' : '🔴';
+    const chs = b.chapters.map(c =>
+      `<div class="m" style="margin:2px 0 0 0">第${c.idx}章《${esc(c.title)}》 ${c.len}字 ${c.problems && c.problems.length ? '⚠ ' + esc(c.problems.join('；')) : '✓'}</div>`
+    ).join('');
+    const stat = !b.alive ? '站点不可达' : (!b.catalog ? '目录解析失败' : '');
+    return `<div class="card" style="padding:10px 14px">
+      <div class="t" style="font-size:13.5px">${lamp} ${esc(b.title)} <span class="tag gw">${esc(b.site)}</span>${stat ? `<span class="tag warn">${stat}</span>` : ''}</div>
+      <div class="m">目录 ${b.catalog} 章</div>${chs}</div>`;
+  }).join('');
+}
+
+async function loadHealth() {
+  const h = await api('/api/health');
+  if (h.books && h.books.length) {
+    renderHealth({books: h.books, n_ok: h.books.filter(b => b.ok).length, n_total: h.books.length});
+    $('healthsum').textContent = '上次体检结果';
+  }
+}
+
+async function simpleJob(path, name) {
+  const j0 = await api(path, {method:'POST'});
+  if (j0.error) { alert(name + '失败：' + j0.error); return; }
+  const timer = setInterval(async () => {
+    const j = await api('/api/job/' + j0.job_id);
+    if (j.status === 'done') {
+      clearInterval(timer);
+      alert(name + '完成\n' + ((j.result && (j.result.txt_file || '')) || ''));
+      loadShelf();
+    } else if (j.status === 'failed') {
+      clearInterval(timer);
+      alert(name + '失败：' + (j.result && j.result.error));
+    }
+  }, 2000);
+}
+
+(async function init() {
+  const cfg = await api('/api/config');
+  HINT = `.reader 目录：<b>${esc(cfg.reader_dir)}</b><br>Reader 端使用：导入一次 <b>bs_gateway.json</b> 书源后，在 Reader 搜索框直接搜书名，所有书（含被防护站点）均可在线阅读。`;
+  setHint();
+  loadShelf();
+  loadHealth();
+})();
+</script>
+</body>
+</html>

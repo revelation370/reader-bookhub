@@ -1,0 +1,30 @@
+{
+  "book_sources": [
+    {
+      "title": "bookhub网关",
+      "host": "http://127.0.0.1",
+      "query_url": "http://127.0.0.1/g/search?q=%s",
+      "query_method": 0,
+      "query_params": "",
+      "query_charset": 1,
+      "book_name_xpath": "//a[@class='bh-name']",
+      "book_mainpage_xpath": "//a[@class='bh-name']/@href",
+      "book_author_xpath": "//span[@class='bh-author']",
+      "enable_chapter_page": 0,
+      "chapter_page_xpath": "",
+      "chapter_title_xpath": "//a[@class='bh-chapter']",
+      "chapter_url_xpath": "//a[@class='bh-chapter']/@href",
+      "enable_chapter_next": 0,
+      "chapter_next_url_xpath": "",
+      "chapter_next_keyword_xpath": "",
+      "chapter_next_keyword": "",
+      "content_xpath": "//div[@id='bh-content']",
+      "enable_content_next": 0,
+      "content_next_url_xpath": "",
+      "content_next_keyword_xpath": "",
+      "content_next_keyword": "",
+      "content_filter_type": 0,
+      "content_filter_keyword": ""
+    }
+  ]
+}
