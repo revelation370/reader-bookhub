@@ -92,6 +92,9 @@ def test_chapterish(t, ok):
     ("https://www.jnsxs.org/infos/12275/", False),
     ("https://www.qbxs.net/read/114633/54220093.html", True),
     ("https://www.qbxs.net/read/114633/54220093_2.html", True),
+    ("https://yuzhaiwu3.cc/novel/65671/12344772.html", True),   # /novel/数字/数字.html 章节页
+    ("https://www.yqyp.net/book/8543171_1.html", False),        # 目录分页页（数字_数字 但单层）是书页
+    ("https://www.iwyx.net/book/1012905.html", False),
 ])
 def test_score_url(url, is_chapter):
     assert (_score_url(url) < 0) == is_chapter

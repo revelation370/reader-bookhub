@@ -40,6 +40,9 @@ def _search_site(fetcher, seed, keyword):
     except Exception:
         return []
     out = []
+    from autobs import norm_space as _ns
+    import re as _re
+    rows = _pair_rows(names)
     for n, u in zip(names, urls):
         title = norm_space(n.text_content() if hasattr(n, "text_content") else str(n))
         if not title:
@@ -48,6 +51,7 @@ def _search_site(fetcher, seed, keyword):
             "title": title[:60],
             "url": urljoin(r.url, u),
             "site": seed["name"],
+            "author": _row_author(_row_of(n), title, _ns),
         })
         if len(out) >= 30:
             break
@@ -180,3 +184,40 @@ def maybe_add_seed(src, fetcher):
 def _root(host):
     parts = (host or "").lower().lstrip(".").split(".")
     return ".".join(parts[-2:])
+
+
+def _row_of(el, max_up=3):
+    """书名元素向上找行容器（文本明显多于书名本身的最小祖先）。"""
+    row = el
+    for _ in range(max_up):
+        p = row.getparent()
+        if p is None:
+            break
+        row = p
+        if len(norm_space(row.text_content() or "")) > 20:
+            return row
+    return row
+
+
+def _pair_rows(names):
+    return None  # 兼容占位（行容器在 _row_author 内部按需获取）
+
+
+def _row_author(row, title, ns):
+    """从搜索结果行提取作者：两种常见形态——
+    1) 杰奇系行文本『书名 连载中作者：XX 最新章节』（正则）
+    2) 列布局行内无链接短文本元素（晋江式 span）"""
+    try:
+        text = ns(row.text_content() or "")
+        m = re.search(r"作者[：:\s]*([^\s　,，第（(]{1,20})", text)
+        if m:
+            return m.group(1)[:20]
+        for el in row.iter("span", "td", "em", "p"):
+            if list(el.iter("a")):
+                continue
+            txt = ns(el.text_content() or "")
+            if 2 <= len(txt) <= 12 and txt != title                     and not re.search(r"\d|连载|完本|小说|阅读|章", txt):
+                return txt[:20]
+    except Exception:
+        pass
+    return ""

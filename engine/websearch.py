@@ -75,7 +75,9 @@ def bing_search(fetcher, keyword, force_l3=False):
             # 特征 = /read/书id/章节id 两层数字路径，或 _2.html 分页后缀。
             # 单层数字文件名（如 /yimo/3208398.html）是书页形态，保留。
             path = urlparse(href).path.lower()
-            if re.search(r"/reads?/\d+/\d+", path) or re.search(r"_\d+(\.html?)?$", path):
+            if (re.search(r"/reads?/\d+/\d+", path)
+                    or re.search(r"/\d+/\d+(_\d+)?\.html?$", path)  # 任意 数字/数字.html 两层形态
+                    or re.search(r"_\d+(\.html?)?$", path)):
                 continue
             k = href.split("#")[0].rstrip("/")
             if k in seen:
@@ -106,19 +108,26 @@ def bing_search(fetcher, keyword, force_l3=False):
 
 
 def _verify(fetcher, keyword, url):
-    """打开候选页验证标题仍含书名。返回 True/False。"""
+    """打开候选页验证标题仍含书名。通过时返回作者名（可为空串），否则 None。"""
     try:
         r = fetcher.get(url)
     except Exception:
-        return False
+        return None
     if r is None:
-        return False
+        return None
     doc = parse_doc(r)
     if doc is None:
-        return False
+        return None
     text = _norm_title(" ".join(
         t for t in [e.text_content() for e in doc.xpath("//title | //h1")] if t))
-    return _norm_title(keyword) in text
+    if _norm_title(keyword) not in text:
+        return None
+    try:
+        from autobs import extract_book_info
+        _, author = extract_book_info(doc, url)
+        return author or ""
+    except Exception:
+        return ""
 
 
 def _score_url(url):
@@ -154,11 +163,12 @@ def _verify_candidates(fetcher, keyword, cands, max_verify=MAX_VERIFY):
             for fut in as_completed(futs, timeout=VERIFY_TIMEOUT * 3):
                 title, url = futs[fut]
                 try:
-                    if fut.result(timeout=VERIFY_TIMEOUT):
+                    author = fut.result(timeout=VERIFY_TIMEOUT)
+                    if author is not None:
                         host = urlparse(url).netloc
                         out.append({"title": title[:60], "url": url,
                                     "site": host.replace("www.", "").replace("m.", ""),
-                                    "src": "web"})
+                                    "src": "web", "author": author})
                 except Exception:
                     pass
         except Exception:
