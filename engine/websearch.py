@@ -7,11 +7,12 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote, urlparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "autobs"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "autobs"))
 from autobs import parse_doc, norm_space  # noqa: E402
 
 # 非小说站黑名单（按主域名/关键词匹配）
 DOMAIN_BL = (
+    "jjwxc.net", "jjwxc.com",  # 用户不需要晋江（种子与发现层全部排除，含 wap/m 子域）
     "baidu.com", "bing.com", "google.com", "sogou.com", "so.com", "sm.cn",
     "zhihu.com", "weibo.com", "bilibili.com", "douban.com", "qq.com",
     "weixin.qq.com", "sohu.com", "163.com", "csdn.net", "jianshu.com",
