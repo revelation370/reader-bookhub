@@ -54,9 +54,10 @@ def _bing_fetch(fetcher, query):
     return parse_doc(r)
 
 
-def bing_search(fetcher, keyword, force_l3=False):
+def bing_search(fetcher, keyword, force_l3=False, author=""):
     """Bing 搜索一轮。force_l3=False 走普通 HTTP（快但易被降级），
-    True 用真浏览器（慢 ~5s 但结果完整）。返回 [(title, url)]。"""
+    True 用真浏览器（慢 ~5s 但结果完整）。author 非空时启用联合查询
+    变体（『"书名" 作者』——作者词能大幅过滤同名噪音）。返回 [(title, url)]。"""
     import time
     seen, results = set(), []
 
@@ -85,7 +86,11 @@ def bing_search(fetcher, keyword, force_l3=False):
             seen.add(k)
             results.append((title, href))
 
-    variants = list(QUERY_VARIANTS) if not force_l3 else [QUERY_VARIANTS[0]]
+    variants = list(QUERY_VARIANTS)
+    if author:
+        variants = ['"{kw}" {au}'.format(kw=keyword, au=author)] + variants
+    if force_l3:
+        variants = variants[:1]
     for i, tpl in enumerate(variants):
         if i:
             time.sleep(2.5)
@@ -176,16 +181,18 @@ def _verify_candidates(fetcher, keyword, cands, max_verify=MAX_VERIFY):
     return out
 
 
-def web_discover(fetcher, keyword, max_results=6):
+def web_discover(fetcher, keyword, max_results=6, author=""):
     """发现层主入口（两阶段）：
     1) 普通 HTTP 抓 Bing（快）→ 预验
     2) 结果为空 → 真浏览器再抓一轮 → 预验（Bing 对无 JS 请求常降级）
     返回 [{'title','url','site','src':'web'}]。"""
-    out = _verify_candidates(fetcher, keyword, bing_search(fetcher, keyword))
+    out = _verify_candidates(fetcher, keyword,
+                             bing_search(fetcher, keyword, author=author))
     if not out:
         try:
             out = _verify_candidates(fetcher, keyword,
-                                     bing_search(fetcher, keyword, force_l3=True))
+                                     bing_search(fetcher, keyword, force_l3=True,
+                                                 author=author))
         except Exception:
             out = []
     return out[:max_results]

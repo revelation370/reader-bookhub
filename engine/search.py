@@ -118,8 +118,11 @@ def aggregate_search(fetcher, keyword, seeds=None, timeout_per_site=40, web=True
     def _rank(x):
         rel = _relevance(keyword, x["title"])
         au = (x.get("author") or "")
-        if want_author and (want_author in au or au in want_author and au):
-            rel -= 1  # 作者匹配的书前置一级
+        if want_author:
+            if au and (want_author in au or au in want_author):
+                rel -= 1   # 作者匹配的书前置一级
+            elif au:
+                rel += 1   # 作者明确不符的同名书降一级（空作者视为未知，不降）
         return rel
 
     results.sort(key=_rank)
@@ -148,7 +151,7 @@ def aggregate_search(fetcher, keyword, seeds=None, timeout_per_site=40, web=True
                 from engine.websearch import web_discover
             except ImportError:
                 from websearch import web_discover
-            web_results = web_discover(fetcher, keyword)
+            web_results = web_discover(fetcher, keyword, author=want_author)
         except Exception as e:
             errors.append({"site": "web", "error": str(e)[:80]})
 
