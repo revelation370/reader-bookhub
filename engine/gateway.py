@@ -229,7 +229,24 @@ class BookStore:
                 "shelf": True,  # 解析成功即视为用户在读这本书，自动入书架
             })
         self._persist(bid)
+        # 后台尝试沉淀种子（该站站内搜索可用才写入；失败静默——
+        # 站点不稳定时下次解析会再试）
+        threading.Thread(target=self._try_sediment, args=(bid,), daemon=True).start()
         return b, ""
+
+    def _try_sediment(self, bid):
+        try:
+            from search import maybe_add_seed
+            from fetcher import LayeredFetcher
+            b = self.get(bid)
+            if not b or not b.get("src"):
+                return
+            solo = LayeredFetcher()
+            got = maybe_add_seed(b["src"], solo)
+            if got:
+                print("[seed] 沉淀新种子: %s" % got.get("name"))
+        except Exception:
+            pass
 
     def fetch_chapter(self, bid, n, fetcher, prefetch=False):
         """抓第 n 章（1-based），返回正文文本（已清洗水印）。失败返回 None。
