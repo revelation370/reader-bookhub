@@ -118,6 +118,17 @@ def test_domain_watermark():
     assert "一秒记住" not in out and "他推开门" in out
 
 
+# ---- 查询拆词：书名+作者 ----
+def test_split_query():
+    from engine.search import split_query
+    assert split_query("测试长书名 某作者") == ("测试长书名", "某作者")
+    assert split_query("测试长书名 by 某作者") == ("测试长书名", "某作者")
+    assert split_query("测试长书名 作者：某作者")[1] == "某作者"
+    assert split_query("测试长书名") == ("测试长书名", "")
+    # 第二段像书名特征时不拆
+    assert split_query("测试长书名 小说全集")[1] == ""
+
+
 # ---- 缓存键 ----
 def test_url_hash_stable():
     assert _url_hash("http://a/1.html") == _url_hash("http://a/1.html")

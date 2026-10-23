@@ -342,15 +342,17 @@ def _filter_domain_watermark(text, page_url):
 # ---------------- HTML 渲染 ----------------
 
 def render_search_page(results, base):
-    """搜索结果页：结构与 GW_XPATHS 对齐。results: [{id,title,author,site}]"""
+    """搜索结果页：结构与 GW_XPATHS 对齐。results: [{id,title,author,site}]
+    链接带 ?src=站点 —— Reader 的"主页"列由此可辨来源（查询参数不影响路由）。"""
     rows = []
     for r in results:
+        src = ("?src=" + (r["site"] or "").replace(" ", "")) if r.get("site") else ""
         rows.append(
             "<div class='bh-result'>"
-            "<a class='bh-name' href='%s/g/book/%s'>%s</a>"
+            "<a class='bh-name' href='%s/g/book/%s%s'>%s</a>"
             "<span class='bh-site'>%s</span>"
             "<span class='bh-author'>%s</span>"
-            "</div>" % (base, r["id"], _esc(r["title"]), _esc(r["site"] or ""),
+            "</div>" % (base, r["id"], src, _esc(r["title"]), _esc(r["site"] or ""),
                         _esc(r.get("author") or "")))
     body = "\n".join(rows) or "<div class='bh-empty'>没有找到相关书籍</div>"
     return "<html><head><meta charset='utf-8'></head><body>\n%s\n</body></html>" % body

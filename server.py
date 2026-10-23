@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autobs"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "autobs"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, Request, Query
@@ -356,15 +356,24 @@ def api_health():
 # ---------------- 网关（Reader 书源指向这里） ----------------
 def _merge_shelf(keyword, results):
     """把书架上书名匹配的书置顶并入搜索结果——解析过的书在 Reader
-    搜索框必须始终可搜到（网关 id 直达，无需重新解析）。"""
+    搜索框必须始终可搜到（网关 id 直达，无需重新解析）。
+    输入支持『书名 作者』：按书名部分匹配（作者也参与匹配加分）。"""
     import re as _re
-    key = _re.sub(r"\s+", "", keyword)
+    from engine.search import split_query
+    title_q, author_q = split_query(keyword)
+    key = _re.sub(r"\s+", "", title_q)
     merged = []
     seen = set()
     for b in store.all(shelf_only=True):
-        if key and key in _re.sub(r"\s+", "", b.get("title") or ""):
+        t_match = key and key in _re.sub(r"\s+", "", b.get("title") or "")
+        a_match = author_q and author_q in (b.get("author") or "")
+        if t_match or a_match:
+            site = b.get("site")
+            if not site:
+                from urllib.parse import urlparse as _up
+                site = _up(b["url"]).netloc.replace("www.", "")
             merged.append({"id": b["id"], "title": b["title"], "url": b["url"],
-                           "site": b.get("site") or "书架", "src": "shelf",
+                           "site": site, "src": "shelf",
                            "author": b.get("author") or ""})
             seen.add(b["url"].rstrip("/"))
     for r in results:

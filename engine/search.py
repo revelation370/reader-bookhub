@@ -73,9 +73,24 @@ def _relevance(keyword, title):
     return 3
 
 
+def split_query(q):
+    """『书名 作者』/『书名 by 作者』拆分：第二段短且非书名特征时视为作者。
+    返回 (书名, 作者或'')。"""
+    q = (q or "").strip()
+    m = re.split(r"\s+by\s+|[\s　]+", q, maxsplit=1, flags=re.I)
+    if len(m) == 2 and m[0] and m[1]:
+        title, author = m[0].strip(), m[1].strip()
+        author = re.sub(r"^作者[：:\s]*", "", author)
+        if 1 < len(author) <= 12 and not re.search(r"小说|全集|番外|阅读", author):
+            return title, author
+    return q, ""
+
+
 def aggregate_search(fetcher, keyword, seeds=None, timeout_per_site=40, web=True):
     """三层搜索：种子站直搜（并发）+ 搜索引擎发现层（Bing）。
-    返回扁平列表：种子结果在前（相关度排序），网页发现结果在后。"""
+    输入支持『书名 作者』联合查询：作者用于结果过滤排序，搜索用书名。
+    返回扁平列表：作者匹配的最前，其余按相关度。"""
+    keyword, want_author = split_query(keyword)
     seeds = seeds or load_seeds()
     results = []
     errors = []
@@ -100,7 +115,14 @@ def aggregate_search(fetcher, keyword, seeds=None, timeout_per_site=40, web=True
                     errors.append({"site": seed["name"], "error": "超时"})
     for r_ in results:
         r_["src"] = "seed"
-    results.sort(key=lambda x: _relevance(keyword, x["title"]))
+    def _rank(x):
+        rel = _relevance(keyword, x["title"])
+        au = (x.get("author") or "")
+        if want_author and (want_author in au or au in want_author and au):
+            rel -= 1  # 作者匹配的书前置一级
+        return rel
+
+    results.sort(key=_rank)
     # 噪音治理：完全不含关键词的结果直接丢；"标题是关键词子串"的拆词噪音
     # （如搜「测试长书名」返回《交易》）每站最多 4 条；正常结果每站 12 条
     from collections import Counter
@@ -129,6 +151,13 @@ def aggregate_search(fetcher, keyword, seeds=None, timeout_per_site=40, web=True
             web_results = web_discover(fetcher, keyword)
         except Exception as e:
             errors.append({"site": "web", "error": str(e)[:80]})
+
+    # 联合查询（带作者）时，发现层结果与种子结果统一按作者匹配度重排，
+    # 否则目标书（常来自发现层）会整体沉底
+    if want_author and web_results:
+        merged0 = results + web_results
+        merged0.sort(key=_rank)
+        results, web_results = merged0[:len(results)], merged0[len(results):]
 
     # 同 URL / 同主域去重：种子站结果优先于网页发现
     seen_url, seen_root, uniq = set(), set(), []
