@@ -159,6 +159,13 @@ def aggregate_search(fetcher, keyword, seeds=None, timeout_per_site=40, web=True
         merged0.sort(key=_rank)
         results, web_results = merged0[:len(results)], merged0[len(results):]
 
+    # 全局重排：种子站与发现层结果同台按相关度排序——
+    # 发现层的精确匹配结果不应被种子站的拆词噪音（如搜长书名返回的单字书）压制
+    if web_results:
+        results = results + web_results
+        results.sort(key=_rank)
+        web_results = []
+
     # 同 URL / 同主域去重：种子站结果优先于网页发现
     seen_url, seen_root, uniq = set(), set(), []
     for r_ in results + web_results:
