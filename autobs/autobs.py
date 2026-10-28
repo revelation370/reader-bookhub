@@ -1258,6 +1258,8 @@ WATERMARK_LINE = [
     re.compile(r"一秒记住"),                  # qbxs 系站名水印常用语
     re.compile(r"作品编号|收藏到书柜|点击榜|推荐票|求收藏|求月票"),  # 章首书籍信息块
     re.compile(r"^.{0,50}>.*(?:手机访问|加入书架|章节目录|小说详情|返回)"),  # 站内面包屑头
+    re.compile(r".{0,20}最快更新.{0,50}$"),      # 以沫系：站名+最快更新首行水印
+    re.compile(r"扫描二维码|手机浏览器"),              # yqyp 系：手机扫码提示头
 ]
 
 
@@ -1421,6 +1423,32 @@ def download_book(bs_file, book_url, out_path, limit=0, debug=False):
     return True
 
 
+def drop_latest_block(items):
+    """目录页顶部「最新章节」倒序小部件去重。
+
+    很多站点目录页上方有一块"最新 N 章"（倒序），下方才是完整正序列表，
+    两者用相同排版，xpath 会一起抓到（前缀倒序 + 全量正序 = 镜像重复）。
+    判定：去掉前 k 条后 URL 全部唯一，且前 k 条的 URL 绝大多数在剩余
+    部分中重现（镜像）。满足则丢弃前缀。返回 (items, dropped)。
+    items: [{"title","url"},...]（原地不改）。"""
+    urls = [c["url"] for c in items]
+    n = len(urls)
+    if len(set(urls)) == n:
+        return items, 0
+    pos = {}
+    for i, u in enumerate(urls):
+        pos.setdefault(u, []).append(i)
+    # 最小 k = 重复 URL 倒数第二次出现位置的最大值 + 1（保证剩余唯一）
+    k = 1 + max(p[-2] for p in pos.values() if len(p) >= 2)
+    if k <= 0 or k >= n:
+        return items, 0
+    tail = set(urls[k:])
+    mirror = sum(1 for u in urls[:k] if u in tail)
+    if mirror >= k * 0.8:
+        return items[k:], k
+    return items, 0
+
+
 def resolve_book(url, title=None, author=None, name=None, no_search=False,
                  debug=False, fetcher=None):
     """解析一本书的站点结构，返回结构化结果（供 CLI 与 bookhub 共用）。
@@ -1515,13 +1543,18 @@ def resolve_book(url, title=None, author=None, name=None, no_search=False,
     title_xp, url_xp = chapter_pair
     chapters_el = doc.xpath(title_xp)
     chapter_hrefs = doc.xpath(url_xp)
-    n_ch = len(chapters_el)
-    sample = norm_space(chapters_el[0].text_content()) if n_ch else ""
-    log("OK", "章节列表: %d 章  首章: %s" % (n_ch, sample))
-    report.append(("章节列表", True, "%d 章" % n_ch))
     chapters = [{"title": norm_space(e.text_content()),
                  "url": urljoin(list_url, h)}
                 for e, h in zip(chapters_el, chapter_hrefs)]
+    chapters, dropped = drop_latest_block(chapters)
+    if dropped:
+        chapters_el = chapters_el[dropped:]
+        chapter_hrefs = chapter_hrefs[dropped:]
+    n_ch = len(chapters)
+    sample = norm_space(chapters_el[0].text_content()) if n_ch else ""
+    log("OK", "章节列表: %d 章  首章: %s%s" %
+        (n_ch, sample, "（已去除顶部最新章节镜像块 %d 条）" % dropped if dropped else ""))
+    report.append(("章节列表", True, "%d 章" % n_ch))
     if n_ch < 10:
         log("WARN", "章节数偏少，若是短书正常；否则可能识别到了错误区块")
 

@@ -13,7 +13,8 @@ for _p in (os.path.join(BASE, "autobs"), os.path.join(os.path.dirname(BASE), "au
         sys.path.insert(0, _p)
 
 from autobs import (is_watermark_line, is_waf_page, SEO_TAIL,  # noqa: E402
-                    CHAPTERISH_HEAD, NUMLIKE_TITLE, _cut_nav_prefix)
+                    CHAPTERISH_HEAD, NUMLIKE_TITLE, _cut_nav_prefix,
+                    drop_latest_block)
 from engine.gateway import _url_hash  # noqa: E402
 from engine.websearch import _score_url, _norm_title  # noqa: E402
 from engine.search import _relevance  # noqa: E402
@@ -98,6 +99,46 @@ def test_chapterish(t, ok):
 ])
 def test_score_url(url, is_chapter):
     assert (_score_url(url) < 0) == is_chapter
+
+
+# ---- drop_latest_block：顶部「最新章节」倒序小部件 ----
+def _mkch(n):
+    return [{"title": "第%d章" % i, "url": "https://t.example/b/%d.html" % i}
+            for i in range(1, n + 1)]
+
+
+def test_drop_latest_block_mirror():
+    """历史事故：站目录页顶部最新8章倒序 + 完整正序列表被一起抓到。"""
+    full = _mkch(10)
+    latest_rev = list(reversed(full[-3:]))     # 第10、9、8 章倒序在前
+    items = latest_rev + full
+    out, dropped = drop_latest_block(items)
+    assert dropped == 3
+    assert [c["url"] for c in out] == [c["url"] for c in full]
+    assert out[0]["title"] == "第1章"
+
+
+def test_drop_latest_block_no_dup():
+    out, dropped = drop_latest_block(_mkch(10))
+    assert dropped == 0 and len(out) == 10
+
+
+def test_drop_latest_block_not_mirror():
+    """前缀 URL 不在正序块中重现（真独立内容）时不能误删。"""
+    full = _mkch(10)
+    other = [{"title": "推荐%d" % i, "url": "https://t.example/x/%d.html" % i}
+             for i in range(3)]
+    out, dropped = drop_latest_block(other + full)
+    assert dropped == 0 and len(out) == 13
+
+
+def test_drop_latest_block_triple():
+    """同一 URL 出现 3 次（顶栏 + 侧栏 + 正序列表）→ 全部早于正序块的都删。"""
+    full = _mkch(10)
+    items = list(reversed(full[-2:])) + list(reversed(full[-2:])) + full
+    out, dropped = drop_latest_block(items)
+    assert dropped == 4
+    assert [c["url"] for c in out] == [c["url"] for c in full]
 
 
 # ---- bing_search L3：固定纯引号变体 ----
