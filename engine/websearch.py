@@ -58,7 +58,8 @@ def _bing_fetch(fetcher, query):
 def bing_search(fetcher, keyword, force_l3=False, author=""):
     """Bing 搜索一轮。force_l3=False 走普通 HTTP（快但易被降级），
     True 用真浏览器（慢 ~5s 但结果完整）。author 非空时启用联合查询
-    变体（『"书名" 作者』——作者词能大幅过滤同名噪音）。返回 [(title, url)]。"""
+    变体（『"书名" 作者』——作者词能大幅过滤同名噪音，仅 L1 使用；
+    L3 固定纯引号变体）。返回 [(title, url)]。"""
     import time
     seen, results = set(), []
 
@@ -91,7 +92,9 @@ def bing_search(fetcher, keyword, force_l3=False, author=""):
     if author:
         variants = ['"{kw}" {au}'.format(kw=keyword, au=author)] + variants
     if force_l3:
-        variants = variants[:1]
+        # L3 固定纯引号：『"书名" 作者』即使真浏览器请求，Bing 也返回
+        # 百科/知乎类结果（实测 2026-10），纯引号才是稳定命中小说站的形态。
+        variants = ['"{kw}"'.format(kw=keyword)]
     for i, tpl in enumerate(variants):
         if i:
             time.sleep(2.5)

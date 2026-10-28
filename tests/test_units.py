@@ -100,6 +100,27 @@ def test_score_url(url, is_chapter):
     assert (_score_url(url) < 0) == is_chapter
 
 
+# ---- bing_search L3：固定纯引号变体 ----
+def test_bing_l3_pure_quote_only():
+    """L3+作者词时必须只搜『"书名"』。历史事故：搜「书名 作者」L1 全降级后，
+    L3 只试『"书名" 作者』变体，而该形态 Bing 即使真浏览器也返回百科/知乎
+    垃圾，导致 0 结果（稳定命中小说站的只有纯引号形态）。"""
+    from urllib.parse import quote
+    from engine import websearch
+
+    calls = []
+
+    class FakeFetcher:
+        def _req(self, method, url, **kw):
+            calls.append(url)
+            return None
+
+    websearch.bing_search(FakeFetcher(), "测试长书名",
+                          force_l3=True, author="测试作者")
+    assert calls == ["https://cn.bing.com/search?q="
+                     + quote('"测试长书名"')]
+
+
 # ---- _relevance：搜索结果排序 ----
 @pytest.mark.parametrize("kw,title,rel", [
     ("无敌测试皇", "无敌测试皇", 0),
