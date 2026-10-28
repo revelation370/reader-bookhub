@@ -79,11 +79,42 @@ def norm_space(s):
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
+# 反爬混淆常见形态：JS 源码放在裸文本节点（非 <script> 内），由相邻
+# <script> 取 previousSibling.textContent 执行（wanwx 系：let urls=[...]
+# .split("UU").join("")...）。clean_text/extract 都要剔除这类文本。
+_JS_OBFUSC = re.compile(r'\.split\("[^"]{1,4}"\)\.join\(')
+_JS_LINE_START = re.compile(
+    r"(let |var |const |function |window\.|document\.|navigator\.|;"
+    r"\(function|\(function|\(new |new |if\(|if \(|return |eval\("
+    r"|try\{|try \{|typeof )")
+_JS_CALL_LINE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$.]*\([^()]*\);?$")
+
+
+def _is_js_text(s):
+    """整块文本（文本节点/整行）是否为 JS 源码。中文正文不会误伤。"""
+    s = (s or "").strip()
+    if len(s) < 6:
+        return False
+    if _JS_OBFUSC.search(s):
+        return True
+    return bool(_JS_LINE_START.match(s) or _JS_CALL_LINE.match(s))
+
+
+def garbled_ratio(text):
+    """字体反爬检测：文本中 CJK 扩展区/私用区字符占比。
+    自定义字体映射站（如铜雀台）静态 HTML 的正文全是生僻字映射，
+    正常中文正文该占比几乎为 0。"""
+    n = max(1, len(text))
+    ext = sum(1 for c in text
+              if "\U00020000" <= c <= "\U0003ffff" or "\ue000" <= c <= "\uf8ff")
+    return ext / n
+
+
 def clean_text(el):
-    """元素文本（排除 script/style 子树），用于正文度量。"""
+    """元素文本（排除 script/style 子树与 JS 样裸文本节点），用于正文度量。"""
     try:
         parts = el.xpath(".//text()[not(ancestor::script) and not(ancestor::style)]")
-        return norm_space(" ".join(t for t in parts if t))
+        return norm_space(" ".join(t for t in parts if t and not _is_js_text(t)))
     except Exception:
         return norm_space(el.text_content())
 
@@ -251,6 +282,12 @@ def rel_tag_path(container, el):
     return "/".join(reversed(tags))
 
 
+def _chap_num(t):
+    """标题里的章节号（第X章 / X. 两种形态），取不到返回 None。"""
+    m = re.match(r"^\s*(?:第\s*(\d+)\s*章|(\d+)\s*[.、])", t or "")
+    return int(m.group(1) or m.group(2)) if m else None
+
+
 def group_anchors(doc, min_count=5):
     """把页面里的 <a> 按父级结构签名分组，返回 [(分数, anchors)] 降序。"""
     anchors = []
@@ -301,6 +338,13 @@ def group_anchors(doc, min_count=5):
         # （推广/推荐组的标题是书名或问答句）——强区分信号，直接乘权
         chapterish = sum(1 for t in texts if CHAPTERISH_HEAD.match(t))
         score *= (0.3 + 1.7 * chapterish / len(items))
+        # 「最新章节」侧栏识别：组内章节号整体递减（如 279.→172. 倒序块），
+        # 完整目录几乎总是正序或低章号开头。倒序块降权——数量再多也争不过
+        # 正序主目录；仅当页面没有正序候选时才可能胜出。
+        nums = [_chap_num(t) for t in texts]
+        pairs = [(a, b) for a, b in zip(nums, nums[1:]) if a and b]
+        if pairs and sum(1 for a, b in pairs if a > b) / len(pairs) >= 0.8:
+            score *= 0.4
         if len(prefix) > len("/"):
             score *= 1.2
         scored.append((score, items))
@@ -588,6 +632,8 @@ def detect_content_xpath(chapter_docs):
             n = len(text)
             if n < 300:
                 continue
+            if garbled_ratio(text) > 0.15:
+                continue  # 字体反爬：静态文本是生僻字映射，抓了也是乱码
             link_text = sum(len(clean_text(a)) for a in el.iter("a"))
             density = link_text / max(1, n)
             if density > 0.25:
@@ -1224,7 +1270,8 @@ def extract_content_text(container):
     text = text.replace("\xa0", "")  # 站点用不间断空格做缩进，去掉（段落换行已保留）
     lines = [ln.strip() for ln in text.split("\n")]
     lines = [_cut_nav_prefix(ln) for ln in lines]
-    lines = [ln for ln in lines if ln and not is_watermark_line(ln)]
+    lines = [ln for ln in lines
+             if ln and not is_watermark_line(ln) and not _is_js_text(ln)]
     return "\n".join(lines)
 
 
@@ -1260,6 +1307,7 @@ WATERMARK_LINE = [
     re.compile(r"^.{0,50}>.*(?:手机访问|加入书架|章节目录|小说详情|返回)"),  # 站内面包屑头
     re.compile(r".{0,20}最快更新.{0,50}$"),      # 以沫系：站名+最快更新首行水印
     re.compile(r"扫描二维码|手机浏览器"),              # yqyp 系：手机扫码提示头
+    re.compile(r"记住.{0,10}域名|朋友.{0,6}书荒|看最新章节.{0,3}完整章节"),  # wanwx 系：防盗截断尾水印
 ]
 
 
@@ -1426,26 +1474,41 @@ def download_book(bs_file, book_url, out_path, limit=0, debug=False):
 def drop_latest_block(items):
     """目录页顶部「最新章节」倒序小部件去重。
 
-    很多站点目录页上方有一块"最新 N 章"（倒序），下方才是完整正序列表，
-    两者用相同排版，xpath 会一起抓到（前缀倒序 + 全量正序 = 镜像重复）。
-    判定：去掉前 k 条后 URL 全部唯一，且前 k 条的 URL 绝大多数在剩余
-    部分中重现（镜像）。满足则丢弃前缀。返回 (items, dropped)。
-    items: [{"title","url"},...]（原地不改）。"""
+    很多站点目录页上方有一块"最新 N 章"（倒序），下方才是完整正序列表。
+    两种形态：
+    1. 同页镜像（wanwx）：小部件的 URL 在下方列表里重现 —— 按 URL 去重丢弃前缀；
+    2. 跨页镜像（boshishuwu）：小部件预告的是分页后段的章节，本页 URL 不重现，
+       特征 = 前缀章号严格递减 + 其余整体递增。
+    返回 (items, dropped)。items: [{"title","url"},...]（原地不改）。"""
     urls = [c["url"] for c in items]
     n = len(urls)
-    if len(set(urls)) == n:
-        return items, 0
-    pos = {}
-    for i, u in enumerate(urls):
-        pos.setdefault(u, []).append(i)
-    # 最小 k = 重复 URL 倒数第二次出现位置的最大值 + 1（保证剩余唯一）
-    k = 1 + max(p[-2] for p in pos.values() if len(p) >= 2)
-    if k <= 0 or k >= n:
-        return items, 0
-    tail = set(urls[k:])
-    mirror = sum(1 for u in urls[:k] if u in tail)
-    if mirror >= k * 0.8:
-        return items[k:], k
+    if len(set(urls)) != n:
+        pos = {}
+        for i, u in enumerate(urls):
+            pos.setdefault(u, []).append(i)
+        # 最小 k = 重复 URL 倒数第二次出现位置的最大值 + 1（保证剩余唯一）
+        k = 1 + max(p[-2] for p in pos.values() if len(p) >= 2)
+        if 0 < k < n:
+            tail = set(urls[k:])
+            mirror = sum(1 for u in urls[:k] if u in tail)
+            if mirror >= k * 0.8:
+                return items[k:], k
+    # 形态2：前缀章号递减 + 尾部递增（跨页镜像的最新预览块）。
+    # 预览块展示的是"最新章节"，其章号必然全部大于本页正序列表的最大章号
+    # ——用这一条消解「预览末章 → 第1章」同样递减的边界歧义（大 k 优先）。
+    nums = [_chap_num(c.get("title") or "") for c in items]
+    if n >= 20:
+        for k in range(n // 3, 2, -1):
+            head, tailn = nums[:k], [x for x in nums[k:] if x]
+            if any(x is None for x in head) or len(tailn) < 10:
+                continue
+            hp = [(a, b) for a, b in zip(head, head[1:])]
+            if (min(head) <= max(tailn)
+                    or sum(1 for a, b in hp if a > b) / len(hp) < 0.9):
+                continue
+            tp = list(zip(tailn, tailn[1:]))
+            if sum(1 for a, b in tp if a < b) / len(tp) >= 0.95:
+                return items[k:], k
     return items, 0
 
 
@@ -1542,7 +1605,9 @@ def resolve_book(url, title=None, author=None, name=None, no_search=False,
 
     title_xp, url_xp = chapter_pair
     chapters_el = doc.xpath(title_xp)
-    chapter_hrefs = doc.xpath(url_xp)
+    # href 首尾空白清洗：部分站模板输出 "xxx.html " 带尾随空格，
+    # requests 会编码成 %20 导致 404（boshishuwu 实测 25/108 条中招）
+    chapter_hrefs = [h.strip() for h in doc.xpath(url_xp)]
     chapters = [{"title": norm_space(e.text_content()),
                  "url": urljoin(list_url, h)}
                 for e, h in zip(chapters_el, chapter_hrefs)]
@@ -1568,9 +1633,55 @@ def resolve_book(url, title=None, author=None, name=None, no_search=False,
     # ---------- 4. 正文 ----------
     first_abs = urljoin(list_url, chapter_hrefs[0])
     mid_abs = urljoin(list_url, chapter_hrefs[n_ch // 2]) if n_ch > 2 else first_abs
+
+    # 分页合并：网关/txt 下载需要完整章节列表（Reader 直连仍用 next xpath 自翻页）。
+    # 每页先各自 drop_latest_block（各页常带同款"最新章节"预览块），再按 URL 去重拼接。
+    if ch_next:
+        cur_doc, cur_url, pseen = doc, list_url, {norm_url(list_url)}
+        seen = {norm_url(c["url"]) for c in chapters}
+        for _ in range(20):
+            # 不用 ch_next[0] 的位置 xpath：目录分页后各页按钮数量不同
+            # （p2 多"上一页"），同位置会取到页码/回退链接；语义查找更稳
+            _el, nu = find_next_page_anchor(cur_doc, cur_url)
+            if not nu or norm_url(nu) in pseen:
+                break
+            pseen.add(norm_url(nu))
+            rp = f.get(nu, referer=cur_url)
+            if rp is None:
+                time.sleep(1.5)
+                rp = f.get(nu, referer=cur_url)  # 偶发 404/超时重试
+            if rp is None:
+                log("WARN", "目录分页 %s 抓取失败，已合并 %d 章" % (nu, len(chapters)))
+                break
+            dp = parse_doc(rp)
+            if dp is None:
+                break
+            hrefs_p = [h.strip() for h in dp.xpath(url_xp)]
+            page_ch = [{"title": norm_space(e.text_content()),
+                        "url": urljoin(nu, h)}
+                       for e, h in zip(dp.xpath(title_xp), hrefs_p)]
+            page_ch, _ = drop_latest_block(page_ch)
+            added = 0
+            for c in page_ch:
+                k2 = norm_url(c["url"])
+                if k2 not in seen:
+                    seen.add(k2)
+                    chapters.append(c)
+                    added += 1
+            if not added:
+                break
+            cur_doc, cur_url = dp, nu
+        if len(chapters) != n_ch:
+            log("OK", "目录分页合并: %d → %d 章" % (n_ch, len(chapters)))
+            report.append(("目录分页合并", True, "共 %d 章" % len(chapters)))
+            n_ch = len(chapters)
+
     ch_docs = []
     for u in (first_abs, mid_abs):
         rr = f.get(u, referer=list_url)
+        if rr is None:
+            time.sleep(1.5)
+            rr = f.get(u, referer=list_url)  # 站点偶发 404/超时，单次重试
         if rr is None:
             return {"error": "无法打开章节页: %s" % u}
         d = parse_doc(rr)

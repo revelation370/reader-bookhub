@@ -14,7 +14,8 @@ for _p in (os.path.join(BASE, "autobs"), os.path.join(os.path.dirname(BASE), "au
 
 from autobs import (is_watermark_line, is_waf_page, SEO_TAIL,  # noqa: E402
                     CHAPTERISH_HEAD, NUMLIKE_TITLE, _cut_nav_prefix,
-                    drop_latest_block)
+                    drop_latest_block, _is_js_text, extract_content_text,
+                    garbled_ratio)
 from engine.gateway import _url_hash  # noqa: E402
 from engine.websearch import _score_url, _norm_title  # noqa: E402
 from engine.search import _relevance  # noqa: E402
@@ -30,6 +31,9 @@ from engine.gateway import _filter_domain_watermark  # noqa: E402
     ("上一章 章节目录 保存书签 下一章", True),          # yqyp 导航行
     ("[全本小说]:qbxs. N e t 一秒记住！", True),
     ("示例站>测试长书名>手机访问", True),        # 面包屑头
+    ("◑喜欢看本书吗？那就记住 玩文学小说*网 的域名ｗａｎwx.com◑", True),  # wanwx 防盗水印
+    ("请来玩文学小说*网*看最新章节*完整章节", True),
+    ("你的朋友正在书荒，快去帮帮他吧", True),
     ("他推开门，走了进去。", False),                    # 正常正文
     ("“下一章是什么？”她问道。", False),                # 正文对话提及导航词（单处）
 ])
@@ -139,6 +143,63 @@ def test_drop_latest_block_triple():
     out, dropped = drop_latest_block(items)
     assert dropped == 4
     assert [c["url"] for c in out] == [c["url"] for c in full]
+
+
+def test_drop_latest_block_crosspage():
+    """历史事故：boshishuwu 侧栏预告分页后段章节，本页 URL 不重现——
+    靠「前缀章号递减 + 尾部递增」识别（跨页镜像）。"""
+    tail = _mkch(60)                       # 第1..60章 正序
+    preview = [{"title": "第%d章" % i, "url": "https://t.example/b/%d.html" % i}
+               for i in range(70, 61, -1)]  # 第70..61章 倒序预览
+    out, dropped = drop_latest_block(preview + tail)
+    assert dropped == 9
+    assert out[0]["title"] == "第1章" and len(out) == 60
+
+
+def test_drop_latest_block_no_num_not_dropped():
+    """无章号标题（正文序号缺失）不能被形态2误删。"""
+    items = [{"title": "悄悄话 %d" % i, "url": "https://t.example/x/%d" % i}
+             for i in range(30)]
+    out, dropped = drop_latest_block(items)
+    assert dropped == 0 and len(out) == 30
+
+
+# ---- _is_js_text：反爬混淆的裸 JS 文本节点 ----
+@pytest.mark.parametrize("line,js", [
+    ('let urls=["hUUtUUtUUs".split("UU").join("")];window.__rr__hld=1;', True),
+    ('(new Function(document.currentScript.previousSibling.textContent))();', True),
+    ("setRead();", True),
+    ("var alal = function() {", True),
+    (";(function(){", True),
+    ("他推开门走了进去。", False),
+    ("“let me see，”她说。", False),
+    ("第2章测试剧情", False),
+])
+def test_is_js_text(line, js):
+    assert _is_js_text(line) == js
+
+
+def test_extract_strips_js_text():
+    """历史事故：wanwx 把 JS 放在裸文本节点，正文里混出 let urls=[...]。"""
+    import lxml.html
+    html = ('<div id="content"><div class="panel-body">'
+            "<p>他推开门走了进去。</p><p>屋里很黑。</p></div>"
+            "<div>let urls=[\"hUU\".split(\"UU\").join(\"\")];</div>"
+            "<div>setRead();</div></div>")
+    out = extract_content_text(lxml.html.fromstring(html))
+    assert "let urls" not in out and "setRead" not in out
+    assert "他推开门走了进去。" in out
+
+
+# ---- garbled_ratio：字体反爬检测 ----
+def test_garbled_ratio():
+    """历史事故：铜雀台静态正文全是 CJK 扩展区映射字，detect 误选为正文容器。"""
+    normal = "他推开门走了进去，屋里很黑。" * 30
+    assert garbled_ratio(normal) == 0
+    obf = "𤻁𢍓𢋎𧜉𦃟𣞱𧼦𥄼𢐗味𨐅。" * 30   # 字体映射乱码
+    assert garbled_ratio(obf) > 0.5
+    mixed = "正常句子若干。" * 10 + "𤻁𢍓𢋎" * 20
+    assert 0.15 < garbled_ratio(mixed) < 0.9
 
 
 # ---- bing_search L3：固定纯引号变体 ----
