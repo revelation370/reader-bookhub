@@ -25,9 +25,10 @@ DOMAIN_BL = (
     "music.163", "y.qq.com",
 )
 
-# 实测结论（2026-10）：Bing 上「纯引号短语」命中最稳；
-# 引号后加"小说/全文阅读"等后缀反而触发降级（返回词典类垃圾）。
-QUERY_VARIANTS = ('"{kw}"', '{kw} 小说')
+# 实测结论（2026-10）：Bing 上「纯引号短语」多数书命中最稳；
+# 但部分书名（短词开头的长书名）引号查询会触发 Bing 的
+# 单字字典模式，反而裸关键词能命中小说站——三种变体按序尝试、够数即停。
+QUERY_VARIANTS = ('"{kw}"', '{kw}', '{kw} 小说')
 MAX_VERIFY = 8          # 最多预验的候选数
 VERIFY_TIMEOUT = 12
 
@@ -58,8 +59,9 @@ def _bing_fetch(fetcher, query):
 def bing_search(fetcher, keyword, force_l3=False, author=""):
     """Bing 搜索一轮。force_l3=False 走普通 HTTP（快但易被降级），
     True 用真浏览器（慢 ~5s 但结果完整）。author 非空时启用联合查询
-    变体（『"书名" 作者』——作者词能大幅过滤同名噪音，仅 L1 使用；
-    L3 固定纯引号变体）。返回 [(title, url)]。"""
+    变体（『"书名" 作者』——作者词能大幅过滤同名噪音，仅 L1 使用）。
+    变体够数即停：L1 拿到 6 条可读链接后不再试后续变体（省 2.5s 间隔），
+    L3 每次抓取 ~5s，拿到即停。返回 [(title, url)]。"""
     import time
     seen, results = set(), []
 
@@ -92,13 +94,15 @@ def bing_search(fetcher, keyword, force_l3=False, author=""):
     if author:
         variants = ['"{kw}" {au}'.format(kw=keyword, au=author)] + variants
     if force_l3:
-        # L3 固定纯引号：『"书名" 作者』即使真浏览器请求，Bing 也返回
-        # 百科/知乎类结果（实测 2026-10），纯引号才是稳定命中小说站的形态。
-        variants = ['"{kw}"'.format(kw=keyword)]
+        # L3 不用作者变体（『"书名" 作者』即使真浏览器 Bing 也返回百科/
+        # 知乎类结果）；纯引号最稳，但部分书名会触发字典模式，
+        # 用裸关键词兜底，拿到即停。
+        variants = ['"{kw}"', '{kw}']
+    enough = 1 if force_l3 else 6
     for i, tpl in enumerate(variants):
         if i:
-            time.sleep(2.5)
-        q = quote(tpl.format(kw=keyword))
+            time.sleep(1.5 if force_l3 else 2.5)
+        q = quote(tpl.format(kw=keyword, au=author))
         try:
             if force_l3:
                 r = fetcher._req("GET", "https://cn.bing.com/search?q=" + q,
@@ -113,6 +117,8 @@ def bing_search(fetcher, keyword, force_l3=False, author=""):
         doc = parse_doc(r)
         if doc is not None:
             _collect(doc)
+            if len(results) >= enough:
+                break
     return results
 
 

@@ -1267,6 +1267,16 @@ def extract_content_text(container):
     raw = re.sub(r"(?is)<script.*?</script>|<style.*?</style>", "", raw)
     text = re.sub(r"<[^>]+>", "", raw)
     text = ihtml.unescape(text)
+    # 二次解码数字实体：镜像站 CMS 常把上游的实体再转义一层（&amp;#60920;），
+    # 站方自己页面也显示 "&#60920;" 乱码——码点解出后多是私用区/零宽字符
+    text = re.sub(r"&#(\d{1,7});",
+                  lambda m: chr(int(m.group(1))) if int(m.group(1)) < 0x110000 else "",
+                  text)
+    text = re.sub(r"&#x([0-9a-fA-F]{1,6});",
+                  lambda m: chr(int(m.group(1), 16))
+                  if int(m.group(1), 16) < 0x110000 else "", text)
+    # 零宽字符与私用区字符（自定义字体映射/反爬插入）在中文正文里都是噪音
+    text = re.sub(r"[\u200b-\u200f\u2060\ufeff\ue000-\uf8ff]", "", text)
     text = text.replace("\xa0", "")  # 站点用不间断空格做缩进，去掉（段落换行已保留）
     lines = [ln.strip() for ln in text.split("\n")]
     lines = [_cut_nav_prefix(ln) for ln in lines]
@@ -1308,6 +1318,9 @@ WATERMARK_LINE = [
     re.compile(r".{0,20}最快更新.{0,50}$"),      # 以沫系：站名+最快更新首行水印
     re.compile(r"扫描二维码|手机浏览器"),              # yqyp 系：手机扫码提示头
     re.compile(r"记住.{0,10}域名|朋友.{0,6}书荒|看最新章节.{0,3}完整章节"),  # wanwx 系：防盗截断尾水印
+    re.compile(r"^\d{1,4}$"),              # 章首裸编号行（001/002 式页面装饰）
+    re.compile(r"剧情升级|故事走向更值得期待"),   # boshishuwu 系：全站固定 AI 导读语
+    re.compile(r"请收藏本站|手机版[:：]?[a-z0-9.]{4,}$"),  # nana00 系：章尾收藏提示
 ]
 
 

@@ -34,6 +34,10 @@ from engine.gateway import _filter_domain_watermark  # noqa: E402
     ("◑喜欢看本书吗？那就记住 玩文学小说*网 的域名ｗａｎwx.com◑", True),  # wanwx 防盗水印
     ("请来玩文学小说*网*看最新章节*完整章节", True),
     ("你的朋友正在书荒，快去帮帮他吧", True),
+    ("001", True),                                   # 章首裸编号行
+    ("003", True),
+    ("更大的冲突和剧情升级做好铺垫，故事走向更值得期待。", True),  # 站方固定导读语
+    ("他数到3就停下了。", False),                     # 正文里带数字的句子不受影响
     ("他推开门，走了进去。", False),                    # 正常正文
     ("“下一章是什么？”她问道。", False),                # 正文对话提及导航词（单处）
 ])
@@ -191,6 +195,18 @@ def test_extract_strips_js_text():
     assert "他推开门走了进去。" in out
 
 
+def test_extract_decodes_double_escaped_entities():
+    """历史事故：wodushu 把数字实体二次转义（&amp;#60920;），正文里出现
+    字面 "&#60920;&#8204;"（私用区+零宽字符，站方自己也是乱码）。"""
+    import lxml.html
+    html = ('<div id="content"><p>比试分为两轮，第&amp;#60920;&amp;#8204;'
+            "轮决出五人。</p><p>琉璃灯\u200c火下。</p></div>")
+    out = extract_content_text(lxml.html.fromstring(html))
+    assert "&#" not in out
+    assert "比试分为两轮，第轮决出五人。" in out
+    assert "\u200c" not in out and "琉璃灯火下。" in out
+
+
 # ---- garbled_ratio：字体反爬检测 ----
 def test_garbled_ratio():
     """历史事故：铜雀台静态正文全是 CJK 扩展区映射字，detect 误选为正文容器。"""
@@ -202,11 +218,10 @@ def test_garbled_ratio():
     assert 0.15 < garbled_ratio(mixed) < 0.9
 
 
-# ---- bing_search L3：固定纯引号变体 ----
-def test_bing_l3_pure_quote_only():
-    """L3+作者词时必须只搜『"书名"』。历史事故：搜「书名 作者」L1 全降级后，
-    L3 只试『"书名" 作者』变体，而该形态 Bing 即使真浏览器也返回百科/知乎
-    垃圾，导致 0 结果（稳定命中小说站的只有纯引号形态）。"""
+# ---- bing_search L3：变体选择 ----
+def test_bing_l3_variants():
+    """L3 不用作者变体（真浏览器 Bing 也返回百科/知乎垃圾，历史事故），
+    序列 = 纯引号 → 裸关键词（部分书名引号查询触发字典模式），无结果才继续。"""
     from urllib.parse import quote
     from engine import websearch
 
@@ -219,8 +234,10 @@ def test_bing_l3_pure_quote_only():
 
     websearch.bing_search(FakeFetcher(), "测试长书名",
                           force_l3=True, author="测试作者")
-    assert calls == ["https://cn.bing.com/search?q="
-                     + quote('"测试长书名"')]
+    assert calls == [
+        "https://cn.bing.com/search?q=" + quote('"测试长书名"'),
+        "https://cn.bing.com/search?q=" + quote("测试长书名"),
+    ]
 
 
 # ---- _relevance：搜索结果排序 ----
