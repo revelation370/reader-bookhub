@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "autobs"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "autobs"))
 from autobs import (parse_doc, norm_url, norm_space, clean_text,  # noqa: E402
                     extract_content_text, resolve_book, find_next_page_anchor)
 from urllib.parse import urljoin
@@ -74,6 +74,8 @@ class BookStore:
         self._lock = threading.RLock()
         self._pf_lock = threading.Lock()
         self._pf_active = set()
+        self._rthreads = {}          # bid -> 首次解析线程（去重并发打开）
+        self.resolve_wait = 28       # 首次解析限时：超时回错误，后台继续（死站不卡死 Reader）
         self._books = {}
         self._migrate_legacy()
         for fn in os.listdir(BOOKS_DIR):
@@ -172,7 +174,9 @@ class BookStore:
 
     def get_catalog(self, bid, fetcher):
         """Reader 侧取目录：有旧数据立即返回（哪怕过期），过期则在后台
-        静默刷新——绝不让 Reader 的请求同步等待分钟级的重新解析。"""
+        静默刷新——绝不让 Reader 的请求同步等待分钟级的重新解析。
+        未解析的书限时等待首次解析（resolve_wait 秒），超时返回错误，
+        解析线程继续在后台跑完（历史事故：jnsxs 半死站让 Reader 无限转圈）。"""
         with self._lock:
             b = self._books.get(bid)
         if b is None:
@@ -185,7 +189,43 @@ class BookStore:
                 threading.Thread(target=self._bg_refresh,
                                  args=(bid, fetcher), daemon=True).start()
             return b, ""
-        return self.ensure_resolved(bid, fetcher)
+        # 近 10 分钟内硬失败过的书快速返回错误，不再重试（死站每次等满限时太折磨）；
+        # 后台仍有解析线程在跑时除外（加入它继续等）
+        th = self._rthreads.get(bid)
+        if (b.get("error") and (th is None or not th.is_alive())
+                and time.time() - (b.get("failed_at") or 0) < 600):
+            return b, b["error"]
+        return self._first_resolve(bid)
+
+    def _first_resolve(self, bid):
+        """首次解析：单线程去重 + 限时等待。返回 (book, err)。"""
+        with self._lock:
+            th = self._rthreads.get(bid)
+            if th is None or not th.is_alive():
+                th = threading.Thread(target=self._resolve_job, args=(bid,),
+                                      daemon=True)
+                self._rthreads[bid] = th
+                th.start()
+        th.join(self.resolve_wait)
+        with self._lock:
+            b = self._books.get(bid)
+        if b is not None and b.get("resolved"):
+            return b, ""
+        if th.is_alive():
+            return b, "解析超时：站点响应过慢，后台仍在尝试，请稍后重新打开"
+        return b, (b.get("error") if b is not None else "") or "解析失败"
+
+    def _resolve_job(self, bid):
+        try:
+            from engine.fetcher import LayeredFetcher
+            f = LayeredFetcher()
+        except ImportError:
+            from fetcher import LayeredFetcher
+            f = LayeredFetcher()
+        try:
+            self.ensure_resolved(bid, f)
+        except Exception:
+            pass
 
     def _bg_refresh(self, bid, fetcher):
         try:
@@ -218,6 +258,7 @@ class BookStore:
         if "error" in res:
             with self._lock:
                 b["error"] = res["error"]
+                b["failed_at"] = time.time()
             return b, res["error"]
         with self._lock:
             b.update({

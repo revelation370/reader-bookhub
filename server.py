@@ -404,8 +404,10 @@ def g_book(bid: str, refresh: int = 0):
     b, err = (store.ensure_resolved(bid, fetcher, force=True) if refresh
               else store.get_catalog(bid, fetcher))
     if err:
+        # 503 让 Reader 按"请求失败"处理——错误页若按目录解析会缓存成空目录，
+        # 用户重开也拿不到真目录（历史事故）；解析超时时后台仍在跑，稍后重开即得
         return HTMLResponse("<html><body><p>解析失败: %s</p></body></html>" % err,
-                            status_code=200)
+                            status_code=503)
     return gw.render_catalog_page(b, GW_BASE)
 
 

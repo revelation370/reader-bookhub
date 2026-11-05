@@ -16,7 +16,7 @@ from autobs import (is_watermark_line, is_waf_page, SEO_TAIL,  # noqa: E402
                     CHAPTERISH_HEAD, NUMLIKE_TITLE, _cut_nav_prefix,
                     drop_latest_block, _is_js_text, extract_content_text,
                     garbled_ratio)
-from engine.gateway import _url_hash  # noqa: E402
+from engine.gateway import _url_hash, BookStore, _book_id  # noqa: E402
 from engine.websearch import _score_url, _norm_title  # noqa: E402
 from engine.search import _relevance  # noqa: E402
 from engine.gateway import _filter_domain_watermark  # noqa: E402
@@ -216,6 +216,86 @@ def test_garbled_ratio():
     assert garbled_ratio(obf) > 0.5
     mixed = "正常句子若干。" * 10 + "𤻁𢍓𢋎" * 20
     assert 0.15 < garbled_ratio(mixed) < 0.9
+
+
+# ---- get_catalog 首次解析限时 ----
+def _tmp_store(tmp_path, monkeypatch):
+    import engine.gateway as gw
+    monkeypatch.setattr(gw, "BOOKS_DIR", str(tmp_path / "books"))
+    monkeypatch.setattr(gw, "CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(gw, "LEGACY_BOOKS_FILE", str(tmp_path / "books.json"))
+    return BookStore()
+
+
+def test_first_resolve_timeout(tmp_path, monkeypatch):
+    """历史事故：jnsxs 半死站首次解析无限卡，Reader 点开一直转圈。
+    超时必须返回错误并让后台线程继续。"""
+    import time as _t
+    st = _tmp_store(tmp_path, monkeypatch)
+    st.resolve_wait = 0.3
+
+    def slow_resolve(bid, f, force=False):
+        _t.sleep(1.0)
+        with st._lock:
+            st._books[bid].update({"resolved": True, "chapters": [], "error": ""})
+        return st._books[bid], ""
+
+    monkeypatch.setattr(st, "ensure_resolved", slow_resolve)
+    st.register("https://t.example/dead", title="测试慢站")
+    b, err = st.get_catalog("whatever", None) if False else st.get_catalog(
+        _book_id("https://t.example/dead"), None)
+    assert "超时" in err
+    _t.sleep(0.9)  # 等后台线程跑完
+    b2, err2 = st.get_catalog(_book_id("https://t.example/dead"), None)
+    assert err2 == "" and b2.get("resolved")
+
+
+def test_first_resolve_fast(tmp_path, monkeypatch):
+    st = _tmp_store(tmp_path, monkeypatch)
+
+    def ok_resolve(bid, f, force=False):
+        with st._lock:
+            st._books[bid].update({"resolved": True, "resolved_at": 1e12,
+                                   "chapters": [{"title": "第1章", "url": "u"}],
+                                   "error": ""})
+        return st._books[bid], ""
+
+    monkeypatch.setattr(st, "ensure_resolved", ok_resolve)
+    st.register("https://t.example/ok", title="测试快站")
+    b, err = st.get_catalog(_book_id("https://t.example/ok"), None)
+    assert err == "" and len(b["chapters"]) == 1
+
+
+# ---- baidu_search：跳转链解析 ----
+def test_baidu_search_resolves_redirect(monkeypatch):
+    """百度结果是 baidu.com/link 跳转链，必须跟 Location 拿真实书页地址。"""
+    import time as _time
+    from engine import websearch
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+
+    class FakeResp:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeRedirectResp:
+        def __init__(self, loc):
+            self.headers = {"Location": loc}
+
+    class FakeS:
+        def get(self, url, **kw):
+            return FakeRedirectResp("https://t.example/book/1.html")
+
+    class FakeFetcher:
+        s = FakeS()
+
+        def get(self, url, **kw):
+            return FakeResp('<html><body><h3><a href="http://www.baidu.com/link?url=X">'
+                            "测试长书名最新章节列表</a></h3>"
+                            '<h3><a href="http://www.baidu.com/link?url=Y">'
+                            "无关结果</a></h3></body></html>")
+
+    rows = websearch.baidu_search(FakeFetcher(), "测试长书名")
+    assert rows == [("测试长书名最新章节列表", "https://t.example/book/1.html")]
 
 
 # ---- bing_search L3：变体选择 ----

@@ -122,10 +122,61 @@ def bing_search(fetcher, keyword, force_l3=False, author=""):
     return results
 
 
+def baidu_search(fetcher, keyword, max_links=10, author=""):
+    """百度发现层（主引擎，2026-11-05 实测换位）：cn.bing 中文索引对小说站
+    覆盖不稳且整时段轮换失明（同一批书名 Bing 全 0 条、百度 9/8/6 条，
+    且百度连续 10 次脚本查询无验证页）。结果链接是 baidu.com/link 跳转链，
+    需跟一次 Location 拿真实地址。返回 [(title, url)]。"""
+    import time as _t
+    _t.sleep(2)  # 与前置查询错开，降低连发被风控的概率
+    q = quote(keyword + (" " + author if author else ""))
+    r = fetcher.get("https://www.baidu.com/s?wd=" + q,
+                    referer="https://www.baidu.com/")
+    if r is None:
+        return []
+    doc = parse_doc(r)
+    if doc is None:
+        return []
+    out, seen = [], set()
+    for a in doc.xpath("//h3/a"):
+        href = a.get("href") or ""
+        title = norm_space(a.text_content())
+        if not href or not title:
+            continue
+        if _norm_title(keyword) not in _norm_title(title):
+            continue
+        if href.startswith(("http://www.baidu.com/link", "https://www.baidu.com/link")):
+            try:
+                rr = fetcher.s.get(href, timeout=8, allow_redirects=False)
+                href = rr.headers.get("Location") or ""
+            except Exception:
+                continue
+        if not href.startswith("http"):
+            continue
+        host = urlparse(href).netloc
+        if not host or _blacked(host):
+            continue
+        path = urlparse(href).path.lower()
+        if (re.search(r"/reads?/\d+/\d+", path)
+                or re.search(r"/\d+/\d+(_\d+)?\.html?$", path)
+                or re.search(r"_\d+(\.html?)?$", path)):
+            continue
+        k = href.split("#")[0].rstrip("/")
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append((title, href))
+        if len(out) >= max_links:
+            break
+    return out
+
+
 def _verify(fetcher, keyword, url):
-    """打开候选页验证标题仍含书名。通过时返回作者名（可为空串），否则 None。"""
+    """打开候选页验证标题仍含书名。快探针模式（8s 单发、无重试升级）：
+    打开书页要超过 8s 的站，进了结果也会在 Reader 打开时卡住，不值得收。
+    通过时返回作者名（可为空串），否则 None。"""
     try:
-        r = fetcher.get(url)
+        r = fetcher.get(url, quick=True)
     except Exception:
         return None
     if r is None:
@@ -171,33 +222,50 @@ def _verify_candidates(fetcher, keyword, cands, max_verify=MAX_VERIFY):
     ordered = ordered[:max_verify]
 
     out = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    # 不用 with 块：退出时会 join 全部线程，一个死站能把整轮验证拖到分钟级
+    ex = ThreadPoolExecutor(max_workers=4)
+    try:
         futs = {ex.submit(_verify, fetcher, keyword, url): (title, url)
                 for title, url in ordered}
-        try:
-            for fut in as_completed(futs, timeout=VERIFY_TIMEOUT * 3):
-                title, url = futs[fut]
-                try:
-                    author = fut.result(timeout=VERIFY_TIMEOUT)
-                    if author is not None:
-                        host = urlparse(url).netloc
-                        out.append({"title": title[:60], "url": url,
-                                    "site": host.replace("www.", "").replace("m.", ""),
-                                    "src": "web", "author": author})
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        for fut in as_completed(futs, timeout=VERIFY_TIMEOUT * 3):
+            title, url = futs[fut]
+            try:
+                author = fut.result(timeout=VERIFY_TIMEOUT)
+                if author is not None:
+                    host = urlparse(url).netloc
+                    out.append({"title": title[:60], "url": url,
+                                "site": host.replace("www.", "").replace("m.", ""),
+                                "src": "web", "author": author})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     return out
 
 
 def web_discover(fetcher, keyword, max_results=6, author=""):
-    """发现层主入口（两阶段）：
-    1) 普通 HTTP 抓 Bing（快）→ 预验
-    2) 结果为空 → 真浏览器再抓一轮 → 预验（Bing 对无 JS 请求常降级）
+    """发现层主入口（三阶段，百度主引擎 / Bing 备胎，2026-11-05 换位）：
+    1) 百度（中文小说站覆盖最好）→ 预验
+    2) 结果 <2 条 → Bing 补一轮（两家索引与风控轮换抽风，互为冗余）→ 预验
+    3) 仍为空 → Bing 真浏览器再抓一轮 → 预验
     返回 [{'title','url','site','src':'web'}]。"""
     out = _verify_candidates(fetcher, keyword,
-                             bing_search(fetcher, keyword, author=author))
+                             baidu_search(fetcher, keyword, author=author))
+    if len(out) < 2:
+        try:
+            extra = _verify_candidates(fetcher, keyword,
+                                       bing_search(fetcher, keyword, author=author))
+        except Exception:
+            extra = []
+        if extra:
+            have = {_root_domain(urlparse(r["url"]).netloc) for r in out}
+            for r in extra:
+                rd = _root_domain(urlparse(r["url"]).netloc)
+                if rd not in have:
+                    have.add(rd)
+                    out.append(r)
     if not out:
         try:
             out = _verify_candidates(fetcher, keyword,
